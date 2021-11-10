@@ -1,5 +1,6 @@
 nextflow.enable.dsl=2
 
+// https://carpentries-incubator.github.io/workflows-nextflow/
 
 process DATABASE {
     
@@ -13,7 +14,7 @@ process DATABASE {
     val x
 
     output:
-    file '*'
+    path '*'
     
     script:
     """
@@ -43,7 +44,7 @@ process MSFRAGGER {
 
     label "msfragger"
     
-    //container 'singjust/msfragger:3.1.1'
+    container 'singjust/msfragger:3.1.1'
 
     publishDir "${params.outDir}/msfragger", mode: 'copy'
 
@@ -54,9 +55,11 @@ process MSFRAGGER {
     output:
     path '*.pepXML'
 
+    //local script command: java -Xmx4g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${db_file} ${mzML_file}
+
     script:
     """
-    java -Xmx4g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${db_file} ${mzML_file}
+    java -Xmx4g -jar /MSFragger.jar ${db_file} ${mzML_file}
     """
 }
 
