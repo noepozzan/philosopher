@@ -9,7 +9,8 @@ https://github.com/Nesvilab/philosopher/wiki/Simple-Data-Analysis
 
 A couple important notes and observations:
 
-docker run -it --rm --volume $HOME:$HOME --workdir $PWD prvst/philosopher
+docker run -itv $HOME:$HOME --rm -w $PWD prvst/philosopher
+might add this as well: -u $(id -u):$(id -g)
 -> This command allows you to run your philosopher analysis inside of a docker container, it also mounts your machine's files inside of the virtual docker container. The container is then able to read and write files in your machine's environment
 
 */

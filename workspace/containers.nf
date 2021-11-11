@@ -2,21 +2,13 @@
 
 nextflow.enable.dsl=2
 
-/*
-How about just running all of the files in one process?
-That way, also only one philosopher container would be started and all the metadata (.meta) should be available for the downstream steps. (btw, this is probably why the philosopher pipeline has to be run from one directory only)
-
--> Funny observation:
-I was running philosopher in its container and then called the MSFragger command line tool. The process did not work twice, but then finally after the third try returned a pepXML file.
-(The process was running fine and then just said killed.)
-
-
-Run this nextflow script with the argument -profile docker to have your local environment communicating with the container
-*/
 
 process WORKSPACE {
 	
-	container 'prvst/philosopher:4.0.0'
+	label 'philosopher'
+
+	output:
+	val 'workspace'
 
 	script:
 	"""
@@ -26,14 +18,14 @@ process WORKSPACE {
 
 }
 
-
 process DATABASE {
-	
-	container 'prvst/philosopher:4.0.0'
 
+	label 'philosopher'
+	
 	publishDir "${params.outDir}/database", mode: 'copy'
 
 	input:
+	val workspace
 	val ID
 
 	output:
@@ -58,7 +50,7 @@ process DATABASE {
 
 process GENERATEPARAMS {
 
-	container 'singjust/msfragger:3.1.1'
+	label 'msfragger'
 
 	publishDir "${params.outDir}/generateparams", mode: 'copy'
 
@@ -70,7 +62,6 @@ process GENERATEPARAMS {
 
     script:
     """
-    workd=\$(pwd)
     java -jar /MSFragger.jar --config
     cp closed_fragger.params ${projectDir}
     """
@@ -100,8 +91,6 @@ process MSFRAGGER {
 
     //label "msfragger"
     
-    //container 'singjust/msfragger:3.1.1'
-
     publishDir "${params.outDir}/msfragger", mode: 'copy'
 
     input:
@@ -114,18 +103,16 @@ process MSFRAGGER {
 
     script:
     """
-    workd=\$(pwd)
     java -Xmx${params.fragger_RAM}g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
     cd ${projectDir}
     java -Xmx${params.fragger_RAM}g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
     """
+
 }
 
 process PEPTIDEPROPHET {
     
     label "philosopher"
-
-    container 'prvst/philosopher:4.0.0'
 
     publishDir "${params.outDir}/peptideprophet", mode: 'copy'
        
@@ -150,15 +137,13 @@ process PEPTIDEPROPHET {
 	# execute the same command in workspace for philosopher to run properly
 	cd ${projectDir}
 	philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam ${pepXML}
-
     """
+
 }
 
 process PROTEINPROPHET {
     
     label "philosopher"
-
-    container 'prvst/philosopher:4.0.0'
 
     publishDir "${params.outDir}/proteinprophet", mode: 'copy'
        
@@ -174,74 +159,82 @@ process PROTEINPROPHET {
     philosopher proteinprophet ${pepxml}
 	cd ${projectDir}
     philosopher proteinprophet ${pepxml}
-
     """
+
 }
 
 process FILTERANDFDR {
     
     label "philosopher"
 
-    container 'prvst/philosopher:4.0.0'
-
     publishDir "${params.outDir}/filterandfdr", mode: 'copy'
        
     input:
     path pepxml
     path protXML
+
+    output:
+    path '*'
      
     script:
     """
-	#philosopher workspace --init
-    #philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
+    rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+    philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
 	cd ${projectDir}
     philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
-
     """
+
 }
 
-/*
-Inside of the container:
-I might try to pass in the whole workspace directory into this process and then capturing the output
-like:
-workd=\${pwd}
-cp -a ${projectDir} \$workd
-*/
 process QUANTIFY {
     
     label "philosopher"
 
-    container 'prvst/philosopher:4.0.0'
-
     publishDir "${params.outDir}/quantify", mode: 'copy'
+
+    input:
+    path filter
+
+    output:
+    path '*'
     
     script:
     """
-	#philosopher workspace --init
-    #philosopher freequant --dir .
+	rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+	philosopher freequant --dir .
 	cd ${projectDir}
-    philosopher freequant --dir .
+	philosopher freequant --dir .
     """
+
 }
 
 process REPORT {
     
     label "philosopher"
 
-    container 'prvst/philosopher:4.0.0'
-
     publishDir "${params.outDir}/report", mode: 'copy'
+
+    input:
+    path quant
+
+    output:
+    path '*'
      
     script:
     """
-    #philosopher workspace --init
-    #philosopher report
+    rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+    philosopher report
 	cd ${projectDir}
     philosopher report
     """
+
 }
 
-// command: nextflow run containers.nf -profile docker -with-report -with-trace -with-timeline -with-dag dag.png
+/*
+command to be executed from workspace directory: nextflow run containers.nf -profile docker -with-report -with-trace -with-timeline -with-dag dag.png
+
+Right now, this approach is still somewhat reliant on my specific directory structure. I will fix this once the msfragger part is fully containerized.
+*/
 
 workflow {
 
@@ -254,29 +247,16 @@ workflow {
     params.proteome_ID = "UP000000589"
     ID_ch = Channel.of(params.proteome_ID)
     params.fragger_RAM = 4
-	
-	// this process has to have some logic to be executed first
-	WORKSPACE()
 
-	db_obj = DATABASE(ID_ch)
-	db_obj.view()
+    workspace_obj = WORKSPACE()
+	db_obj = DATABASE(workspace_obj, ID_ch)
 	params_obj = GENERATEPARAMS(db_obj)
-	params_obj.view()
 	change_obj = CHANGEFILE(db_obj, params_obj)
-	change_obj.view()
 	pepXML_obj = MSFRAGGER(input_ch, params_obj, db_obj)
-	pepXML_obj.view()
 	pepdotxml_obj = PEPTIDEPROPHET(db_obj, pepXML_obj)
-	pepdotxml_obj.view()
 	protXML_obj = PROTEINPROPHET(pepdotxml_obj)
-	protXML_obj.view()
-
-	filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)
-	
-	//QUANTIFY()
-	//REPORT()
-
-
-
+	filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)	
+	quant_obj = QUANTIFY(filter_obj)
+	report_obj = REPORT(quant_obj)
 
 }
