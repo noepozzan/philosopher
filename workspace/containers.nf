@@ -2,6 +2,10 @@
 
 nextflow.enable.dsl=2
 
+/*
+add custom file and database to msfragger and database
+*/
+
 
 process WORKSPACE {
 	
@@ -81,7 +85,7 @@ process CHANGEFILE {
 
     script:
     """
-    python ${params.parentDir}/change_file.py ${db} ${closed_fragger}
+    python ${projectDir}/change_file.py ${db} ${closed_fragger}
     cp closed_fragger.params ${projectDir}
     """
 
@@ -90,7 +94,7 @@ process CHANGEFILE {
 process MSFRAGGER {
 
     //label "msfragger"
-    
+
     publishDir "${params.outDir}/msfragger", mode: 'copy'
 
     input:
@@ -103,9 +107,10 @@ process MSFRAGGER {
 
     script:
     """
-    java -Xmx${params.fragger_RAM}g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
+    echo $mzML_file
+    java -Xmx${params.fragger_RAM}g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
     cd ${projectDir}
-    java -Xmx${params.fragger_RAM}g -jar ${params.parentDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
+    java -Xmx${params.fragger_RAM}g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
     """
 
 }
@@ -121,20 +126,16 @@ process PEPTIDEPROPHET {
     path pepXML 
     
     output:
-    path "interact-${params.input_noext}.pep.xml"
+    path "interact-*.pep.xml"
     
     
     script:
     """
-    # save work directory where nf works on
-	workd=\$(pwd)
-	# echo \$workd
-	# initialize philosopher in current wd and run command
+    echo $pepXML
+    # initalise philosopher workspace in nextflow work directory and execute respective command
 	philosopher workspace --init
 	philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam ${pepXML}
-	# copy philosopher output to folder in project workspace
-	# cp -a \$workd/. ${projectDir}/peptideprophet
-	# execute the same command in workspace for philosopher to run properly
+	# execute command in workspace (project directory)
 	cd ${projectDir}
 	philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam ${pepXML}
     """
@@ -155,6 +156,7 @@ process PROTEINPROPHET {
      
     script:
     """
+    echo $pepxml
 	philosopher workspace --init
     philosopher proteinprophet ${pepxml}
 	cd ${projectDir}
@@ -178,6 +180,8 @@ process FILTERANDFDR {
      
     script:
     """
+    echo $pepxml
+    echo $protXML
     rsync -aP --exclude=work --exclude=results ${projectDir}/. .
     philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
 	cd ${projectDir}
@@ -233,29 +237,26 @@ process REPORT {
 /*
 command to be executed from workspace directory: nextflow run containers.nf -profile docker -with-report -with-trace -with-timeline -with-dag dag.png
 
-Right now, this approach is still somewhat reliant on my specific directory structure. I will fix this once the msfragger part is fully containerized.
+The msfragger container doesn't have ps installed, so it is not possible to run this pipeline with the -with-report option. A possible solution is suggested on https://github.com/replikation/What_the_Phage/issues/89.
 */
 
 workflow {
 
-	params.input_file = "001_TPP7-21_C19.mzML"
-    params.input_noext = "001_TPP7-21_C19"
-    params.input = "${projectDir}/${params.input_file}"
-    input_ch = Channel.fromPath(params.input)
-    params.outDir = "/Users/noepozzan/Documents/unibas/nesvilab/workspace/results"
-    params.parentDir = "/Users/noepozzan/Documents/unibas/nesvilab"
-    params.proteome_ID = "UP000000589"
-    ID_ch = Channel.of(params.proteome_ID)
-    params.fragger_RAM = 4
+	input_ch = Channel.fromPath(params.input)
+	ID_ch = Channel.of(params.proteome_ID)
 
     workspace_obj = WORKSPACE()
 	db_obj = DATABASE(workspace_obj, ID_ch)
 	params_obj = GENERATEPARAMS(db_obj)
 	change_obj = CHANGEFILE(db_obj, params_obj)
-	pepXML_obj = MSFRAGGER(input_ch, params_obj, db_obj)
+	pepXML_obj = MSFRAGGER(input_ch, change_obj, db_obj)
+	pepXML_obj.view()
 	pepdotxml_obj = PEPTIDEPROPHET(db_obj, pepXML_obj)
+	pepdotxml_obj.view()
 	protXML_obj = PROTEINPROPHET(pepdotxml_obj)
-	filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)	
+	protXML_obj.view()
+	filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)
+	filter_obj.view()
 	quant_obj = QUANTIFY(filter_obj)
 	report_obj = REPORT(quant_obj)
 
