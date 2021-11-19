@@ -6,6 +6,7 @@ with open(file_name, "r") as f:
 	file = f.readlines()
 	
 file[1] = "database_name = {}\n".format(sys.argv[1])
+file[10] = "calibrate_mass = 0\n"
 
 new_string = ""
 for line in file:

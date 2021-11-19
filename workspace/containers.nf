@@ -17,6 +17,7 @@ process WORKSPACE {
 	script:
 	"""
 	cd ${projectDir}
+	philosopher workspace --clean
 	philosopher workspace --init
 	"""
 
@@ -30,7 +31,7 @@ process DATABASE {
 
 	input:
 	val workspace
-	val ID
+	path db
 
 	output:
 	path '*'
@@ -42,12 +43,13 @@ process DATABASE {
 	# echo \$workd
 	# initialize philosopher in current wd and run command
 	philosopher workspace --init
-	philosopher database --id ${ID} --contam --reviewed
+	philosopher database --custom ${db} --contam 
 	# copy philosopher output to folder in project workspace
 	# cp -a \$workd/. ${params.outDir}/database
 	# execute the same command in workspace for philosopher to run properly
 	cd ${projectDir}
-	philosopher database --id ${ID} --contam --reviewed
+	philosopher workspace --init
+	philosopher database --custom ${db} --contam 
 	"""
 
 }
@@ -98,19 +100,29 @@ process MSFRAGGER {
     publishDir "${params.outDir}/msfragger", mode: 'copy'
 
     input:
-    path mzML_file
+    each mzML_file
     path closed_fragger
     path db_file
 
     output:
     path '*.pepXML'
 
+  	/*
+    MSFragger is doing some stupid stuff again: it outputs the .pepXML file right next to the mzML file. So, the data files must absolutely just plainly be in the workspace directory.
+
+    So, I devised a strategy: I move the mzML files into the directory where msfragger nextflow is working on, so I am sure that the pepXML files will be output right in the work directory. After this step, I will move the mzML files back into the workspace.
+    */
+    
     script:
     """
-    echo $mzML_file
-    java -Xmx${params.fragger_RAM}g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
-    cd ${projectDir}
-    java -Xmx${params.fragger_RAM}g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
+    workd=\$(pwd)
+    mv ${mzML_file} .
+    esel=\$(basename ${mzML_file})
+    java -Xmx8g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} \$esel
+    mv \$esel ${projectDir}
+    # cd ${projectDir}
+    # java -Xmx8g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
+    # rsync -aP --include='*.pepXML' --exclude='*' ${projectDir}/. \$workd
     """
 
 }
@@ -128,10 +140,8 @@ process PEPTIDEPROPHET {
     output:
     path "interact-*.pep.xml"
     
-    
     script:
     """
-    echo $pepXML
     # initalise philosopher workspace in nextflow work directory and execute respective command
 	philosopher workspace --init
 	philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam ${pepXML}
@@ -156,7 +166,6 @@ process PROTEINPROPHET {
      
     script:
     """
-    echo $pepxml
 	philosopher workspace --init
     philosopher proteinprophet ${pepxml}
 	cd ${projectDir}
@@ -180,9 +189,7 @@ process FILTERANDFDR {
      
     script:
     """
-    echo $pepxml
-    echo $protXML
-    rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+    rsync -av --exclude=work --exclude=results --exclude='*.mzML' --exclude=MSFragger ${projectDir}/. .
     philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
 	cd ${projectDir}
     philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML}
@@ -202,9 +209,11 @@ process QUANTIFY {
     output:
     path '*'
     
+    // Copying the files takes quite some time. I will have to implement some logic that copies only the mzML files that is needed at the moment.
+
     script:
     """
-	rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+	rsync -av --exclude=work --exclude=results --exclude=MSFragger ${projectDir}/. .
 	philosopher freequant --dir .
 	cd ${projectDir}
 	philosopher freequant --dir .
@@ -226,7 +235,7 @@ process REPORT {
      
     script:
     """
-    rsync -aP --exclude=work --exclude=results ${projectDir}/. .
+    rsync -av --exclude=work --exclude=results --exclude=MSFragger ${projectDir}/. .
     philosopher report
 	cd ${projectDir}
     philosopher report
@@ -243,20 +252,17 @@ The msfragger container doesn't have ps installed, so it is not possible to run 
 workflow {
 
 	input_ch = Channel.fromPath(params.input)
-	ID_ch = Channel.of(params.proteome_ID)
+	db_ch = Channel.of(params.db)
+	input_ch.view()
 
     workspace_obj = WORKSPACE()
-	db_obj = DATABASE(workspace_obj, ID_ch)
+	db_obj = DATABASE(workspace_obj, db_ch)
 	params_obj = GENERATEPARAMS(db_obj)
 	change_obj = CHANGEFILE(db_obj, params_obj)
 	pepXML_obj = MSFRAGGER(input_ch, change_obj, db_obj)
-	pepXML_obj.view()
 	pepdotxml_obj = PEPTIDEPROPHET(db_obj, pepXML_obj)
-	pepdotxml_obj.view()
 	protXML_obj = PROTEINPROPHET(pepdotxml_obj)
-	protXML_obj.view()
 	filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)
-	filter_obj.view()
 	quant_obj = QUANTIFY(filter_obj)
 	report_obj = REPORT(quant_obj)
 
