@@ -25,10 +25,15 @@ process WORKSPACE {
 
     mkdir -p ${projectDir}/\$prefix
 
-    mv ${projectDir}/${mzML_file} ${projectDir}/\$prefix
+    cp ${projectDir}/${mzML_file} ${projectDir}/\$prefix
 
+    # initialize philosopher workspace in workspace subdirectories
     cd ${projectDir}/\$prefix
+    philosopher workspace --clean
+    philosopher workspace --init
 
+    # initialize philosopher workspace in workspace
+    cd ${projectDir}
     philosopher workspace --clean
     philosopher workspace --init
 
@@ -64,6 +69,11 @@ process DATABASE {
     cd ${projectDir}/\$prefix
     philosopher workspace --init
     philosopher database --custom ${db} --contam
+
+    #
+    cd ${projectDir}
+    philosopher workspace --init
+    philosopher database --custom ${db} --contam
     """
 
 }
@@ -88,7 +98,9 @@ process GENERATEPARAMS {
     prefix=\$(echo \$input | cut -d '_' -f 1)
 
     java -jar /MSFragger.jar --config
+
     cp closed_fragger.params ${projectDir}/\$prefix
+    cp closed_fragger.params ${projectDir}
     """
 
 }
@@ -111,7 +123,9 @@ process CHANGEFILE {
     prefix=\$(echo \$input | cut -d '_' -f 1)
 
     python ${projectDir}/change_file.py ${db} ${closed_fragger}
+
     cp closed_fragger.params ${projectDir}/\$prefix
+    cp closed_fragger.params ${projectDir}
     """
 
 }
@@ -141,9 +155,6 @@ process MSFRAGGER {
     
     script:
     """
-    # move mzML file into this nextflow work directory
-    # mv ${mzML_file} .
-    
     # capture the file name without the path and the prefix
     input=\$(basename ${mzML_file})
     prefix=\$(echo \$input | cut -d '_' -f 1)
@@ -151,26 +162,11 @@ process MSFRAGGER {
     # execute MSFragger on the mzML file (output will be located in this work dir)
     java -Xmx8g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
 
-    # move mzML file back to the workspace
-    #mv \$input ${projectDir}
-
-    # copy all files into a directory named as the input file's prefix
-    #rsync -aP --exclude="\$prefix" . \$prefix
-    #shopt -s extglob
-    #rm -rf !(\$prefix)
-    
-    # change into specific input file directory again
-    # mv ${mzML_file} ${projectDir}/\$prefix
-
-    #cp ${mzML_file} ${projectDir}/\$prefix
-
     cd ${projectDir}/\$prefix
-
     java -Xmx8g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} \$input
-    #mv \$input ${projectDir}
 
-    # copy only .pepXML files from the workspace to this work directory
-    #rsync -aP --include='*.pepXML' --exclude='*' ${projectDir}/. \$workd
+    cd ${projectDir}
+    java -Xmx8g -jar ${projectDir}/MSFragger/MSFragger.jar ${closed_fragger} ${mzML_file}
     """
 
 }
@@ -196,8 +192,11 @@ process PEPTIDEPROPHET {
     cp -r ${projectDir}/\$prefix/.meta .
     philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam --output \$prefix \$input
 
-    # execute command in specific workspace sub directory (prefix)
+    # execute command in specific workspace subdirectory (prefix)
     cd ${projectDir}/\$prefix
+    philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam --output \$prefix \$input 2> \$prefix.peptideprophet
+
+    cd ${projectDir}
     philosopher peptideprophet --database ${db} --decoy rev_ --ppm --accmass --expectscore --decoyprobs --nonparam --output \$prefix \$input 2> \$prefix.peptideprophet
     """
 
@@ -222,14 +221,16 @@ process PROTEINPROPHET {
     prefix=\$(echo \$input | cut -d '-' -f 1)
 
     cp -r ${projectDir}/\$prefix/.meta .
-    mv ${projectDir}/\$prefix/*.pep.xml .
-    #rsync -av --include='*.pep.xml' ${projectDir}/\$prefix .
+    #mv ${projectDir}/\$prefix/*.pep.xml .
     philosopher proteinprophet --output \$prefix ${pepxml}
-    mv *.pep.xml ${projectDir}/\$prefix
+    #mv *.pep.xml ${projectDir}/\$prefix
 
     cp ${projectDir}/\$prefix/\$prefix.prot.xml \$workd
 
     cd ${projectDir}/\$prefix
+    philosopher proteinprophet --output \$prefix ${pepxml} 2> \$prefix.proteinprophet
+
+    cd ${projectDir}
     philosopher proteinprophet --output \$prefix ${pepxml} 2> \$prefix.proteinprophet
     """
 
@@ -246,8 +247,9 @@ process FILTERANDFDR {
     path protXML
 
     output:
-    path '*.filterandfdr', emit: filter_file
-    path protXML, emit: protXML
+    //path '*.filterandfdr', emit: filter_file
+    //path protXML, emit: protXML
+    val 'esel'
      
     script:
     """
@@ -259,36 +261,40 @@ process FILTERANDFDR {
 
     cd ${projectDir}/\$prefix
     philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML} 2> \$prefix.filterandfdr
+
+    cd ${projectDir}
+    philosopher filter --sequential --razor --picked --tag rev_ --pepxml ${pepxml} --protxml ${protXML} 2> result.filterandfdr
     """
 
 }
 
 process QUANTIFY {
+
+    errorStrategy 'retry'
+    maxRetries 5
     
     label "philosopher"
 
     publishDir "${params.outDir}/quantify", mode: 'copy'
 
     input:
-    path filter
-    path protXML
+    //path filter
+    //path protXML
+    val 'filter'
 
     output:
     //path '*.quantify'
-    path '*'
+    val 'tubel'
     
     script:
     """
     # capture prefix of input files
-    input=\$(basename ${protXML})
-    prefix=\$(echo \$input | cut -d '.' -f 1)
+    #input=\$(basename ${protXML})
+    #prefix=\$(echo \$input | cut -d '.' -f 1)
 
-    # copy files to nextflow work directory
-    cp -r ${projectDir}/\$prefix/. .
-    #philosopher freequant --dir . 2> \$prefix.quantify
-
-    #cd ${projectDir}/\$prefix
-    #philosopher freequant --dir . 2> \$prefix.quantify
+    # go to main workspace to integrate all results
+    cd ${projectDir}
+    philosopher freequant --dir . 2> result.quantify
     """
 
 }
@@ -311,11 +317,8 @@ process REPORT {
     input=\$(basename ${protXML})
     prefix=\$(echo \$input | cut -d '.' -f 1)
 
-    cp -r ${projectDir}/\$prefix/. .
-    philosopher report 2> \$prefix.report
-
-    cd ${projectDir}/\$prefix
-    philosopher report 2> \$prefix.report
+    cd ${projectDir}
+    philosopher report 2> report
     """
 
 }
@@ -348,11 +351,15 @@ workflow {
 
     filter_obj = FILTERANDFDR(pepdotxml_obj, protXML_obj)
 
-    quant_obj = QUANTIFY(FILTERANDFDR.out.filter_file, FILTERANDFDR.out.protXML)
+    /*
+    The current problem is still with the freequant process.
+    It is just killed and not even retrying it is helping.
+    */
+    /*
+    //quant_obj = QUANTIFY(FILTERANDFDR.out.filter_file, FILTERANDFDR.out.protXML)
+    quant_obj = QUANTIFY(filter_obj)
     quant_obj.view()
     
-    /*
     report_obj = REPORT(quant_obj)
     */
-
 }
